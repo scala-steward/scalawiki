@@ -145,4 +145,16 @@ class ParserSpec extends Specification {
       mw.info === "Cannot use 'pageids' at the same time as 'titles'"
     }
   }
+
+  "Page ids query" should {
+    // the API answers a page id it no longer has (a deleted page) without a title
+    "leave out a missing page id" in {
+      val json =
+        """{"batchcomplete": "", "query": {"pages": {
+          "99999999999": {"pageid": 99999999999, "missing": ""},
+          "136018389": {"pageid": 136018389, "ns": 6, "title": "File:X.jpg"}}}}"""
+      val pages = new Parser(Action(Query(PageIdsParam(Seq(99999999999L, 136018389L))))).parse(json).get
+      pages.flatMap(_.id) === Seq(136018389L)
+    }
+  }
 }

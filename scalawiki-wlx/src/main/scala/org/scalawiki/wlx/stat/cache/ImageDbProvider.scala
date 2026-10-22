@@ -8,7 +8,7 @@ import org.scalawiki.wlx.query.ImageQuery.PageRevInfo
 import org.scalawiki.wlx.stat.StatConfig
 import org.scalawiki.wlx.stat.progress.Progress
 import org.scalawiki.wlx.ImageCsvImporter.CachedRevision
-import org.scalawiki.wlx.{ImageCsvExporter, ImageCsvImporter, ImageDB, MonumentDB}
+import org.scalawiki.wlx.{DeletedImagesCsv, ImageCsvExporter, ImageCsvImporter, ImageDB, MonumentDB}
 import org.slf4j.LoggerFactory
 import org.scalawiki.util.AtomicFile
 
@@ -55,6 +55,12 @@ import scala.util.Try
   *   ids it returned is checked against `categoryinfo.files` (and, failing that,
   *   against the cached row count). A short sweep (truncated pagination, a
   *   transient API hiccup) keeps every cached row rather than wiping the CSV.
+  * - of the rows a complete sweep no longer lists, those Commons no longer has
+  *   (asked by page id) were deleted: they move to `<campaign>-<year>-deleted-images.csv`
+  *   (`<campaign>-all-deleted-images.csv` for the all-images CSV, see
+  *   [[DeletedImagesCsv]]), which `--deleted-images` reports. The others only left the
+  *   category and are dropped. When Commons can't be asked, every gone row is kept
+  *   for the next run.
   * - delete a CSV to force a full refetch (clearing only `http-cache/` does
   *   nothing, the CSV short-circuits before the request cache is consulted).
   * - a CSV missing a column the exporter now writes (e.g. `media_type`) was
@@ -145,6 +151,10 @@ class ImageDbProvider(
   /** Slim cached rows being synced: their revisions (which slim images drop),
     * and how to re-read them in full when the CSV has to be rewritten. */
   private case class SlimRows(revisions: Map[Long, CachedRevision], readFull: () => Seq[Image])
+
+  /** Where a sync keeps the cached files it finds deleted ([[DeletedImagesCsv]]), and how
+    * it asks Commons which of the files gone from its sweep were deleted. */
+  private case class DeletedFiles(csvPath: String, missing: Set[Long] => Future[Set[Long]])
 
   /** When the CSV at `path` was last written — the instant the cache was known
     * accurate. Used as the "changed since" cut-off for rows that predate the
@@ -347,7 +357,8 @@ class ImageDbProvider(
         ids => query.imagesWithTemplateByIds(yearContest, ids),
         sweepComplete =
           sweepLooksComplete(liveRevs.size, cached.count(_.pageId.isDefined), expectedFiles),
-        slimRows = slimRows
+        slimRows = slimRows,
+        deleted = Some(DeletedFiles(DeletedImagesCsv.filename(contest.campaign, yearContest.year, csvDir), query.missingPageIds))
       )
     } yield db
   }
@@ -356,7 +367,9 @@ class ImageDbProvider(
     * sweep of the wiki:
     *   - ids in the sweep but not the cache  -> fetched (new uploads)
     *   - ids in both whose revision changed  -> refetched (page edited / reuploaded)
-    *   - ids in the cache but not the sweep  -> dropped, *only* when `sweepComplete`
+    *   - ids in the cache but not the sweep  -> dropped, *only* when `sweepComplete`;
+    *     with `deleted`, those Commons no longer has are kept in its CSV, and when
+    *     Commons can't be asked none is dropped this run
     *   - everything else kept as-is (revid/timestamp backfilled from the sweep)
     *
     * "changed" is a `revId` mismatch when both the cached row and the sweep entry
@@ -384,7 +397,8 @@ class ImageDbProvider(
       fetch: Set[Long] => Future[Iterable[Image]],
       extraImages: Iterable[Image] = Nil,
       sweepComplete: Boolean = true,
-      slimRows: Option[SlimRows] = None
+      slimRows: Option[SlimRows] = None,
+      deleted: Option[DeletedFiles] = None
   ): Future[ImageDB] = {
     if (!sweepComplete) incompleteSync.set(true)
     val liveById = liveRevs.iterator.map(r => r.pageId -> r).toMap
@@ -418,6 +432,21 @@ class ImageDbProvider(
         Set.empty[Long]
       }
 
+    // Of the gone rows, the files Commons deleted (the others only left the category or
+    // template). None: Commons couldn't be asked, and this run keeps every gone row.
+    val goneDeleted: Future[Option[Set[Long]]] = deleted match {
+      case Some(d) if goneIds.nonEmpty =>
+        d.missing(goneIds).map(Option(_)).recover { case e =>
+          incompleteSync.set(true)
+          logger.warn(
+            s"[csv-cache] ${yearContest.year}: could not ask Commons whether ${goneIds.size} file(s) gone " +
+              s"from the sweep were deleted ($e); keeping them this run"
+          )
+          None
+        }
+      case _ => Future.successful(Some(Set.empty))
+    }
+
     // rows written before the last_revid column whose revid the sweep can fill in
     def backfillable: Boolean = cachedRevs.exists { case (id, row) =>
       row.revId.isEmpty && liveById.get(id).exists(_.revId.isDefined)
@@ -436,13 +465,17 @@ class ImageDbProvider(
 
       val fetchedFuture =
         if (refetch.isEmpty) Future.successful(Iterable.empty[Image]) else fetch(refetch)
-      fetchedFuture.map { fetched =>
+      for {
+        deletedIds <- goneDeleted
+        fetched <- fetchedFuture
+      } yield {
+        val dropped = if (deletedIds.isDefined) goneIds else Set.empty[Long]
         // slim rows can't be written back: re-read them in full, only now that
         // the fetch is done, so they aren't held during it
         val rows = slimRows.fold(cached)(_.readFull())
         val kept = rows.collect {
           case i
-              if i.pageId.exists(id => !refetch.contains(id) && !goneIds.contains(id)) ||
+              if i.pageId.exists(id => !refetch.contains(id) && !dropped.contains(id)) ||
                 i.pageId.isEmpty =>
             backfill(i)
         }
@@ -467,6 +500,14 @@ class ImageDbProvider(
           config.minMpx
         )
         writeCache(db)
+        for (d <- deleted; ids <- deletedIds) {
+          if (goneIds.nonEmpty)
+            logger.info(
+              s"[csv-cache] ${yearContest.year}: of ${goneIds.size} file(s) gone from the sweep, ${ids.size} " +
+                s"deleted on Commons (kept in ${d.csvPath}), ${goneIds.size - ids.size} left it"
+            )
+          DeletedImagesCsv.update(d.csvPath, rows.filter(_.pageId.exists(ids.contains)), liveById.contains, today)
+        }
         if (slimRows.isDefined) db.copy(images = db.images.map(ImageCsvImporter.slim(_, valuePool)).toVector)
         else db
       }
@@ -534,7 +575,8 @@ class ImageDbProvider(
         ids => query.imagesWithTemplateByIds(contest, ids),
         extraImages = wiki,
         sweepComplete = wikiFetchTrustworthy &&
-          sweepLooksComplete(commonsRevs.size, cachedCommons.count(_.pageId.isDefined), None)
+          sweepLooksComplete(commonsRevs.size, cachedCommons.count(_.pageId.isDefined), None),
+        deleted = Some(DeletedFiles(DeletedImagesCsv.totalFilename(contest.campaign, csvDir), query.missingPageIds))
       )
     } yield new ImageDB(contest, dbsByYear.flatMap(_.images) ++ extras.images, monumentDb, config.minMpx)
   }

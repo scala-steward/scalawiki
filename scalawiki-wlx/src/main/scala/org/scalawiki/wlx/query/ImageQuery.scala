@@ -45,6 +45,11 @@ trait ImageQuery {
     */
   def categoryFileCount(contest: Contest): Future[Option[Long]]
 
+  /** Of `pageIds`, those the wiki no longer has: deleted files. A file only moved out of
+    * a category, or renamed, keeps its page id. Fails if a request does.
+    */
+  def missingPageIds(pageIds: Set[Long]): Future[Set[Long]]
+
 }
 
 class ImageQueryApi(bot: ActionBot, batchGate: AsyncGate = ImageQuery.batchGate) extends ImageQuery with QueryLibrary {
@@ -85,6 +90,16 @@ class ImageQueryApi(bot: ActionBot, batchGate: AsyncGate = ImageQuery.batchGate)
         )
       )
       .map(_.headOption.flatMap(_.categoryInfo).map(_.files))
+
+  /** The API answers a page id it no longer has with `{"pageid": N, "missing": ""}`,
+    * without a title, which the parser leaves out: an id the answer doesn't list is missing.
+    */
+  override def missingPageIds(pageIds: Set[Long]): Future[Set[Long]] =
+    Future
+      .traverse(pageIds.toSeq.sorted.grouped(50).toSeq) { slice =>
+        batchGate.submit(bot.run(Action(Query(PageIdsParam(slice))))).map(pages => slice.toSet -- pages.flatMap(_.id))
+      }
+      .map(_.flatten.toSet)
 
   override def imagesWithTemplate(contest: Contest): Future[Iterable[Image]] =
     contest.fileTemplate

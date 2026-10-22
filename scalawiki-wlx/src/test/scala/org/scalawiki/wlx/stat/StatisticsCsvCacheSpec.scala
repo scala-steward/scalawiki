@@ -6,7 +6,8 @@ import org.scalawiki.dto.Image
 import org.scalawiki.wlx.dto.{Contest, Monument}
 import org.scalawiki.wlx.query.ImageQuery.PageRevInfo
 import org.scalawiki.wlx.query.{ImageQuery, MonumentQuery}
-import org.scalawiki.wlx.{ImageCsvExporter, ImageCsvImporter, ImageDB}
+import org.scalawiki.wlx.DeletedImagesCsv.DeletedImage
+import org.scalawiki.wlx.{DeletedImagesCsv, ImageCsvExporter, ImageCsvImporter, ImageDB}
 import org.specs2.concurrent.ExecutionEnv
 import org.specs2.matcher.FutureMatchers
 import org.specs2.mock.Mockito
@@ -14,7 +15,7 @@ import org.specs2.mutable.Specification
 import spray.util.pimpFuture
 
 import java.nio.file.{Files, Path, Paths}
-import java.time.ZonedDateTime
+import java.time.{LocalDate, ZonedDateTime}
 import scala.concurrent.{Future, Promise}
 import scala.util.Try
 
@@ -66,8 +67,11 @@ class StatisticsCsvCacheSpec(implicit ee: ExecutionEnv)
     q.imagesFromCategory(any[Contest]) returns Future.successful(Nil)
     q.imagesWithTemplate(any[Contest]) returns Future.successful(Nil)
     q.imagesWithTemplateByIds(any[Contest], any[Set[Long]]) returns Future.successful(Nil)
+    q.missingPageIds(any[Set[Long]]) returns Future.successful(Set.empty[Long])
     q
   }
+
+  private def deletedCsv(dir: Path, year: Int): String = DeletedImagesCsv.filename(campaign, year, dir.toString)
 
   private def stats(
       dir: Path,
@@ -541,6 +545,72 @@ class StatisticsCsvCacheSpec(implicit ee: ExecutionEnv)
       there was no(q).imagesWithTemplateByIds(any[Contest], any[Set[Long]])
     }
 
+    "keep the files Commons deleted in the deleted-files CSV, and drop those that only left the category" in {
+      val dir = cacheDir()
+      ImageCsvExporter.export(
+        new ImageDB(contest, Seq(
+          img("File:Keep.jpg", 1L, revId = Some(1L)),
+          img("File:Deleted.jpg", 2L, revId = Some(2L)),
+          img("File:Moved.jpg", 3L, revId = Some(3L))
+        ), None),
+        campaign, isCurrent = false, dir.toString)
+
+      val q = newImageQuery()
+      q.imageIdsFromCategory(contest) returns Future.successful(Seq(rev(1L, 1L)))
+      q.categoryFileCount(contest) returns Future.successful(Some(1L)) // the sweep is complete
+      q.missingPageIds(Set(2L, 3L)) returns Future.successful(Set(2L))
+
+      val data = stats(dir, q).gatherData(total = false).await
+
+      data.currentYearImageDb.images.map(_.title).toSeq must_== Seq("File:Keep.jpg")
+      ImageCsvImporter.imagesFromCsv(yearCsv(dir, 2016).toString).map(_.title) must_== Seq("File:Keep.jpg")
+      val deleted = DeletedImagesCsv.read(deletedCsv(dir, 2016))
+      deleted.map(d => (d.image.title, d.detected)) must_== Seq("File:Deleted.jpg" -> LocalDate.now)
+      deleted.head.image.monumentIds must_== Seq("123")
+    }
+
+    "keep every gone file for the next run when Commons can't say which were deleted" in {
+      val dir = cacheDir()
+      ImageCsvExporter.export(
+        new ImageDB(contest, Seq(
+          img("File:Keep.jpg", 1L, revId = Some(1L)),
+          img("File:Gone.jpg", 2L, revId = Some(2L))
+        ), None),
+        campaign, isCurrent = false, dir.toString)
+
+      val q = newImageQuery()
+      q.imageIdsFromCategory(contest) returns Future.successful(Seq(rev(1L, 1L)))
+      q.missingPageIds(Set(2L)) returns Future.failed(new RuntimeException("Commons is down"))
+
+      val data = stats(dir, q).gatherData(total = false).await
+
+      data.currentYearImageDb.images.map(_.title).toSet must_== Set("File:Keep.jpg", "File:Gone.jpg")
+      rowCount(yearCsv(dir, 2016)) must_== 2
+      new java.io.File(deletedCsv(dir, 2016)).exists must beFalse
+    }
+
+    "take a deleted file listed again out of the deleted-files CSV, keeping the others" in {
+      val dir = cacheDir()
+      ImageCsvExporter.export(
+        new ImageDB(contest, Seq(img("File:Keep.jpg", 1L, revId = Some(1L))), None),
+        campaign, isCurrent = false, dir.toString)
+      DeletedImagesCsv.write(deletedCsv(dir, 2016), Seq(
+        DeletedImage(img("File:Back.jpg", 2L, revId = Some(2L)), LocalDate.parse("2026-01-01")),
+        DeletedImage(img("File:Gone.jpg", 3L, revId = Some(3L)), LocalDate.parse("2026-01-02"))
+      ))
+
+      val q = newImageQuery()
+      q.imageIdsFromCategory(contest) returns Future.successful(Seq(rev(1L, 1L), rev(2L, 2L)))
+      q.imagesWithTemplateByIds(contest, Set(2L)) returns
+        Future.successful(Seq(img("File:Back.jpg", 2L, revId = Some(2L))))
+
+      val data = stats(dir, q).gatherData(total = false).await
+
+      data.currentYearImageDb.images.map(_.title).toSet must_== Set("File:Keep.jpg", "File:Back.jpg")
+      DeletedImagesCsv.read(deletedCsv(dir, 2016)).map(d => (d.image.title, d.detected)) must_==
+        Seq("File:Gone.jpg" -> LocalDate.parse("2026-01-02"))
+    }
+
     "be fully fetched and cached when no CSV exists yet" in {
       val dir = cacheDir()
       val q = newImageQuery()
@@ -615,6 +685,26 @@ class StatisticsCsvCacheSpec(implicit ee: ExecutionEnv)
       // file 1 is synced by the per-year CSV, not refetched for the all-images one
       there was no(q).imagesWithTemplateByIds(any[Contest], any[Set[Long]])
       ImageCsvImporter.imagesFromCsv(totalCsv(dir)).map(_.title) must_== Seq("File:X.jpg")
+    }
+
+    "with --csv-cache-resync: keep its files Commons deleted in the all-time deleted-files CSV" in {
+      val dir = cacheDir()
+      ImageCsvExporter.export(new ImageDB(contest, Seq(img("File:A.jpg", 1L, revId = Some(10L))), None),
+        campaign, isCurrent = false, dir.toString)
+      ImageCsvExporter.exportTotal(
+        new ImageDB(contest, Seq(img("File:X.jpg", 5L, revId = Some(50L)), img("File:Y.jpg", 6L, revId = Some(60L))), None),
+        campaign, dir.toString)
+
+      val q = newImageQuery()
+      q.imageIdsFromCategory(contest) returns Future.successful(Seq(rev(1L, 10L)))
+      q.imageIdsWithTemplate(contest) returns Future.successful(Seq(rev(1L, 10L), rev(5L, 50L)))
+      q.missingPageIds(Set(6L)) returns Future.successful(Set(6L))
+
+      val data = stats(dir, q, csvCacheResync = true).gatherData(total = true).await
+
+      data.totalImageDb.images.map(_.title).toSeq must_== Seq("File:A.jpg", "File:X.jpg")
+      DeletedImagesCsv.read(DeletedImagesCsv.totalFilename(campaign, dir.toString)).map(_.image.title) must_==
+        Seq("File:Y.jpg")
     }
 
     "with --csv-cache-resync: refetch changed rows and keep uk.wiki images" in {
