@@ -26,6 +26,11 @@ import scala.util.Try
   * @param mediaType
   *   kind of file the nomination takes, whatever its monument: only
   *   [[SpecialNomination.Video]] is supported
+  * @param idPrefix
+  *   the first segment of the ids its lists give monuments of their own, in
+  *   place of the region's KOATUU code (e.g. "99" in `99-141-2306`, whose
+  *   second segment still carries the region); those lists also hold
+  *   monuments with their regions' ids
   */
 case class SpecialNomination(
     name: String,
@@ -34,8 +39,13 @@ case class SpecialNomination(
     years: Seq[Int] = Nil,
     cities: Seq[AdmDivision] = Nil,
     fileTemplate: Option[String] = None,
-    mediaType: Option[String] = None
+    mediaType: Option[String] = None,
+    idPrefix: Option[String] = None
 ) {
+
+  /** Whether the nomination runs in `year`: in its [[years]], or in every year
+    * if it lists none. */
+  def inYear(year: Int): Boolean = years.isEmpty || years.contains(year)
 
   /** Whether the file itself places `image` in this nomination - by its
     * [[fileTemplate]] or its [[mediaType]] - rather than its monument. */
@@ -86,13 +96,28 @@ object SpecialNomination {
                 s"expected one of ${mediaTypes.mkString(", ")}"
             )
             mediaType
-          }
+          },
+          c.as[Option[String]]("idPrefix")
         )
       })
       .getOrElse(Seq.empty)
   }
 
   lazy val nominations = load("wlm_ua.conf")
+
+  /** The nominations running in `year` that have an [[idPrefix]], by it. */
+  def byIdPrefix(nominations: Seq[SpecialNomination], year: Int): Map[String, SpecialNomination] =
+    byIdPrefix(nominations.filter(_.inYear(year)))
+
+  /** The nominations that have an [[idPrefix]], by it, whatever their years: a
+    * prefix belongs to its lists, which files of other years may still cite.
+    * Of nominations sharing a prefix, the one of the latest year. */
+  def byIdPrefix(nominations: Seq[SpecialNomination]): Map[String, SpecialNomination] =
+    nominations
+      .filter(_.idPrefix.nonEmpty)
+      .sortBy(n => if (n.years.isEmpty) Int.MaxValue else n.years.max)
+      .map(n => n.idPrefix.get -> n)
+      .toMap
 
   def getMonumentsMap(
       nominations: Seq[SpecialNomination],
