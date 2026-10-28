@@ -70,13 +70,15 @@ class SpecialNominationsSpec extends Specification {
           "Млини",
           Some("WLM-рядок"),
           Seq("Template:WLM млини та вітряки"),
-          Seq(2019, 2020, 2021)
+          Seq(2019, 2020, 2021),
+          idPrefix = Some("88")
         ),
         new SpecialNomination(
           "Єврейська спадщина",
           Some("WLM-рядок"),
           Seq("Template:WLM єврейська спадщина"),
-          Seq(2019, 2020, 2021)
+          Seq(2019, 2020, 2021),
+          idPrefix = Some("99")
         ),
         new SpecialNomination(
           "Віа Регіа",
@@ -89,19 +91,22 @@ class SpecialNominationsSpec extends Specification {
           "Квіти України",
           Some("WLM-рядок"),
           Seq("Template:WLM Квіти України"),
-          Seq(2021)
+          Seq(2021),
+          idPrefix = Some("98")
         ),
         new SpecialNomination(
           "Національно-визвольні",
           Some("WLM-рядок"),
           Seq("Template:WLM національно-визвольні"),
-          Seq(2021)
+          Seq(2021),
+          idPrefix = Some("97")
         ),
         new SpecialNomination(
           "Пам'ятки Подесення",
           Some("WLM-рядок"),
           Seq("Template:WLM Пам'ятки Подесення"),
-          Seq(2021)
+          Seq(2021),
+          idPrefix = Some("95")
         ),
         new SpecialNomination(
           "Аерофото",
@@ -123,6 +128,39 @@ class SpecialNominationsSpec extends Specification {
     "load the video nomination" in {
       SpecialNomination.load("wlm_ua.conf").find(_.name == "Відео").map(sn => (sn.mediaType, sn.years)) ===
         Some((Some(SpecialNomination.Video), Seq(2024, 2025, 2026)))
+    }
+
+    "read the id prefixes" in {
+      val config = ConfigFactory.parseString(
+        """nominations: [{name: "Єврейська спадщина", idPrefix: "99"}, {name: "Бібліотеки"}]"""
+      )
+      SpecialNomination.fromConfig(config).map(_.idPrefix) === Seq(Some("99"), None)
+    }
+
+    "give each nomination of a year its own id prefix" in {
+      val nominations = SpecialNomination.load("wlm_ua.conf")
+      forall(2012 to 2030) { year =>
+        val prefixes = nominations.filter(_.inYear(year)).flatMap(_.idPrefix)
+        prefixes.diff(prefixes.distinct) must beEmpty
+      }
+    }
+
+    "name the id prefixes of a year's nominations" in {
+      val nominations = SpecialNomination.load("wlm_ua.conf")
+      SpecialNomination.byIdPrefix(nominations, 2025).map { case (p, n) => p -> n.name } === Map(
+        "00" -> "Війна руйнує пам'ятки",
+        "93" -> "Польська спадщина",
+        "94" -> "Німецька спадщина",
+        "96" -> "Пам'ятки дерев'яної архітектури України",
+        "99" -> "Єврейська спадщина"
+      )
+      SpecialNomination.byIdPrefix(nominations, 2026).keySet === Set("00", "90", "92", "93", "94", "96", "99")
+    }
+
+    "name the id prefixes of any year's nominations" in {
+      val byPrefix = SpecialNomination.byIdPrefix(SpecialNomination.load("wlm_ua.conf"))
+      byPrefix.keySet === Set("00", "88", "90", "92", "93", "94", "95", "96", "97", "98", "99")
+      byPrefix("88").name === "Млини"
     }
 
     "reject an unknown media type" in {
