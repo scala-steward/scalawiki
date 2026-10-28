@@ -98,6 +98,15 @@ csv-cache/wlm-ua-all-images.csv    # all-time DB's images in no per-year CSV (th
   revision changed since caching (page edited, file reuploaded — e.g. a monument
   id corrected or an ineligible-submission category added) are re-fetched; ids no
   longer in the category are dropped.
+* **Deleted files are kept apart.** Of the ids a complete sweep no longer lists,
+  Commons is asked (by page id) which it no longer has: those were deleted, and
+  move to `csv-cache/<campaign>-<year>-deleted-images.csv`
+  (`<campaign>-all-deleted-images.csv` for the all-images CSV): the image CSV's
+  columns plus `deleted_detected`, the date a sync found the file deleted. The
+  others only left the category and are dropped. A deleted file the sweep lists
+  again (restored, or put back in the category) is taken out of that file. When
+  Commons can't be asked, the gone rows are all kept until the next run.
+  `--deleted-images` publishes them (see the report flags).
 * **Past contest years and the all-images CSV** are frozen (read verbatim) unless
   `--csv-cache-resync` is given, which runs that same new/changed/deleted sweep
   against them. Deleting a CSV still forces a full refetch.
@@ -128,6 +137,7 @@ Flags:
 | `--csv-cache-dir DIR`  | use `DIR` instead of `csv-cache`                                  |
 | `--csv-cache-refresh`  | ignore existing CSV caches this run and overwrite them            |
 | `--csv-cache-resync`   | re-check past years + all-images against the wiki (id+revision sweep); refetch only changed rows, drop deleted |
+| `--deleted-images`     | publish `Commons:<contest type> in <country>/Deleted images`: the files of every year of the run (and the other files of the contest template) found deleted on Commons, from the `*-deleted-images.csv` files |
 | `--csv-cache-resync-interval DAYS` | with `--csv-cache-resync`: skip it when the last completed resync was less than DAYS days ago (its date is kept in `csv-cache/<campaign>-resync.date`); for a daily cron job that should re-check past years weekly |
 
 `--images-from-csv DIR` still works as before (strict: the per-year files must

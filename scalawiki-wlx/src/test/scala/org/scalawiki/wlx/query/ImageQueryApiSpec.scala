@@ -68,6 +68,24 @@ class ImageQueryApiSpec extends Specification {
     }
   }
 
+  "missing page ids" should {
+    "be the asked ids the answer leaves out, asked 50 at a time" in {
+      val existing = (1L to 120L).filterNot(Set(7L, 99L)).toSet
+      val asked = new LinkedBlockingQueue[Seq[Long]]()
+      val bot = new ActionBot {
+        override def log = NoLogging
+        override def run(action: Action, context: Map[String, String], limit: Option[Long]): Future[Iterable[Page]] = {
+          val ids = action.pairs.find(_._1 == "pageids").get._2.split("\\|").map(_.toLong).toSeq
+          asked.add(ids)
+          Future.successful(ids.filter(existing.contains).map(id => new Page(Some(id), Some(6), s"File:$id.jpg")))
+        }
+      }
+      val missing = Await.result(new ImageQueryApi(bot, new AsyncGate(2)).missingPageIds((1L to 120L).toSet), 5.seconds)
+      missing must_== Set(7L, 99L)
+      asked.size must_== 3
+    }
+  }
+
   def version(uploader: String) = Image.basic("File:Театр.jpg", None, Some(uploader), None, None, None, None, None, Some(1L))
 
   // the image query sees only the latest version; the history query lists all of them, newest first

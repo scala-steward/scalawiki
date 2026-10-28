@@ -11,6 +11,8 @@
 #   - <year>/Images with bad ids and /Images with missing ids, for every year
 #     (wlx-resync.sh separately picks up ids fixed in older years' files;
 #     the current year is synced with the wiki on every run)
+#   - Deleted images: the cached files found deleted on Commons, every year
+#     (the current year's are found on every run, older years' by wlx-resync.sh)
 #
 # Expects, next to this script (see "Running on a server" in RUNNING.md):
 #   run-stats.sh         from the repo root
@@ -78,7 +80,7 @@ nice -n 10 ionice -c3 "$base/run-stats.sh" \
   --special-nominations \
   --authors-stat \
   --most-popular-monuments \
-  --wrong-ids --missing-ids \
+  --wrong-ids --missing-ids   --deleted-images \
   --no-progress \
   "$@" > "$log" 2>&1
 status=$?

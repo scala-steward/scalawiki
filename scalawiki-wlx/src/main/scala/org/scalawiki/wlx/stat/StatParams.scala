@@ -17,6 +17,7 @@ case class StatConfig(
     fillListsRating: Boolean = false,
     wrongIds: Boolean = false,
     missingIds: Boolean = false,
+    deletedImages: Boolean = false,
     multipleIds: Boolean = false,
     lowRes: Boolean = false,
     specialNominations: Boolean = false,
@@ -104,6 +105,10 @@ class StatParams(arguments: Seq[String]) extends ScallopConf(arguments) {
   val wrongIds = opt[Boolean](name = "wrong-ids", descr = "report images whose monument id matches no monument, one page per year of the run (special nomination images left out)")
   val missingIds =
     opt[Boolean](name = "missing-ids", descr = "report images with no monument id, one page per year of the run (special nomination images left out)")
+  val deletedImages = opt[Boolean](
+    name = "deleted-images",
+    descr = "report the cached files that were deleted on Commons (kept in the CSV cache's *-deleted-images.csv), every year of the run on one page"
+  )
   val multipleIds =
     opt[Boolean](name = "multiple-ids", descr = "report multiple ids")
   val lowRes =
@@ -204,6 +209,7 @@ object StatParams {
       fillListsRating = conf.fillListsRating.getOrElse(false),
       wrongIds = conf.wrongIds.getOrElse(false),
       missingIds = conf.missingIds.getOrElse(false),
+      deletedImages = conf.deletedImages.getOrElse(false),
       multipleIds = conf.multipleIds.getOrElse(false),
       lowRes = conf.lowRes.getOrElse(false),
       specialNominations = conf.specialNominations.getOrElse(false),

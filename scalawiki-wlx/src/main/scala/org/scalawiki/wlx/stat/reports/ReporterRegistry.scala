@@ -151,6 +151,10 @@ class ReporterRegistry(
       step("imageIdProblems")(ImageIdProblems.updateWiki(stat, cfg.wrongIds, cfg.missingIds, commons))
     }
 
+    if (cfg.deletedImages) {
+      step("deletedImages")(DeletedImages.updateWiki(contest, stat.yearSeq, cfg.effectiveCsvCacheDir, commons))
+    }
+
     if (cfg.newMonuments) {
       step("newMonuments")(Output.newMonuments(stat))
     }
